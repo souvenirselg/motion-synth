@@ -17,7 +17,7 @@ def lowpass_filter(data, cutoff, fs, order=5):
     return lfilter(b, a, data)
 
 # Delay effect class
-""" class DelayEffect:
+class DelayEffect:
     def __init__(self, sample_rate, delay_time=0.3, feedback=0.4):
         self.sample_rate = sample_rate
         self.delay_samples = int(delay_time * sample_rate)
@@ -32,15 +32,19 @@ def lowpass_filter(data, cutoff, fs, order=5):
             output[i] = input_signal[i] + delayed_sample * self.feedback
             self.buffer[self.pos] = output[i]
             self.pos = (self.pos + 1) % len(self.buffer)
-        return output """
+        return output
 
 # Audio engine class with streaming and DSP
 class AudioEngine:
     def __init__(self, synth_state: SynthState):
         self.synth_state = synth_state
         self.sample_rate = synth_state.sample_rate
-        self.block_size = 512
+        self.block_size = 2048
         self.time_pos = 0
+        
+        # Create DelayEffect instance
+        self.delay = DelayEffect(sample_rate=self.sample_rate, delay_time=0.3, feedback=0.4)
+        
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,
             blocksize=self.block_size,
@@ -63,40 +67,31 @@ class AudioEngine:
             freqs = self.synth_state.notes
             adsr = self.synth_state.adsr
 
-            # If no notes, output silence
             if len(freqs) == 0 or self.synth_state.volume < 0.01:
                 outdata[:] = np.zeros((frames, 1))
                 return
 
-            # Generate waveform sum
             for freq in freqs:
-                # Quantize freq to scale
                 freq_q = quantize_freq(freq, SCALES[self.synth_state.scale], self.synth_state.root_midi)
-
                 if self.synth_state.waveform == "sine":
                     waveform += sine_wave(freq_q, t)
                 elif self.synth_state.waveform == "saw":
                     waveform += saw_wave(freq_q, t)
                 elif self.synth_state.waveform == "square":
                     waveform += square_wave(freq_q, t)
+                elif self.synth_state.waveform == "sin+sqr":
+                    waveform += sine_wave(freq_q, t) + square_wave(freq_q, t)
 
             waveform /= max(len(freqs), 1)
 
-            # Apply ADSR envelope (simplified for continuous tone)
-            dt = frames / self.sample_rate
             envelope = np.array([adsr.process(1 / self.sample_rate) for _ in range(frames)])
             waveform *= envelope
-
-            # Apply volume
             waveform *= self.synth_state.volume
 
-            # Apply delay effect
-            #waveform = self.delay.process(waveform)
+            # Use the delay effect instance here
+            waveform = self.delay.process(waveform)
 
-            # Apply lowpass filter for smoothness
             waveform = lowpass_filter(waveform, cutoff=1000, fs=self.sample_rate)
-
-            # Prevent clipping
             waveform = np.clip(waveform, -1, 1)
 
             outdata[:] = waveform.reshape(-1, 1)
