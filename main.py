@@ -8,7 +8,7 @@ import time
 # Finger indices controlling notes (index, middle, ring)
 NOTE_FINGER_INDICES = [8, 12, 16]
 
-# Initialize
+# Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.75)
 mp_draw = mp.solutions.drawing_utils
@@ -33,8 +33,10 @@ def distance(p1, p2):
 
 print("Press 'w' to switch waveform, 'q' to quit.")
 
-waveforms = ["sine", "saw", "square"]
+waveforms = ["sine", "saw", "square", "sin+sqr"]
 waveform_idx = 0
+
+notes_active = False  # Track if notes are currently active
 
 try:
     while True:
@@ -47,7 +49,9 @@ try:
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(image_rgb)
 
-        if results.multi_hand_landmarks and results.multi_handedness:
+        hands_detected = results.multi_hand_landmarks is not None and len(results.multi_hand_landmarks) > 0
+
+        if hands_detected:
             synth_state.notes = []
             # Loop through detected hands
             for idx, hand_landmarks in enumerate(results.multi_hand_landmarks[:2]):
@@ -67,8 +71,13 @@ try:
                 for (x, y) in finger_points:
                     freq = 200 + (1 - y / h) * 800
                     synth_state.notes.append(freq)
+                    cv2.putText(frame, f"{round(freq)}hz", (x,y), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 1)
                     cv2.circle(frame, (x, y), 10, (0, 255, 0), -1)
 
+            # Trigger ADSR note_on only if notes just became active
+            if not notes_active:
+                synth_state.adsr.note_on()
+                notes_active = True
 
             # Use hand distance for volume control if two hands detected
             if len(results.multi_hand_landmarks) == 2:
@@ -79,9 +88,10 @@ try:
                 hand_dist = distance(p1, p2)
                 max_dist = w * 0.7
                 vol = np.clip(hand_dist / max_dist, 0, 1)
-                synth_state.volume = vol
+                # Optional: smooth volume
+                synth_state.volume = 0.9 * synth_state.volume + 0.1 * vol
 
-            # Use index finger y of first hand for ADSR attack time control (mapped 0.01-0.5s)
+            # Use index finger x of first hand for ADSR attack time control (mapped 0.01-0.5s)
             first_hand = results.multi_hand_landmarks[0]
             idx_tip = first_hand.landmark[8]
             attack = np.interp(idx_tip.x, [1, 0], [0.01, 0.5])
@@ -89,14 +99,16 @@ try:
 
         else:
             synth_state.notes = []
-            # Release notes envelope on no hands
-            synth_state.adsr.note_off()
+            # Trigger ADSR note_off only if notes were active
+            if notes_active:
+                synth_state.adsr.note_off()
+                notes_active = False
 
         cv2.putText(frame, f"Waveform: {synth_state.waveform}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
         cv2.putText(frame, f"Volume: {synth_state.volume:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
         cv2.putText(frame, f"Attack: {synth_state.adsr.attack:.2f}s", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
 
-        cv2.imshow("GestureSynth", frame)
+        cv2.imshow("Motion Synth", frame)
 
         key = cv2.waitKey(1)
         if key == ord('q'):
